@@ -24,6 +24,7 @@ import {
 } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { appAuth, appDb, appStorage, firebaseConfigStatus } from './firebase';
+import { fetchPolymarketMarketFeed, type MarketFeedSource } from './polymarket';
 
 type AuthMode = 'signin' | 'signup';
 type RiskLevel = 'conservative' | 'balanced' | 'growth';
@@ -93,6 +94,12 @@ const DEFAULT_ONBOARDING: Omit<OnboardingData, 'createdAt' | 'updatedAt'> = {
   strategyMode: 'compare-both',
 };
 
+const DEFAULT_MARKET_VALUES = {
+  recessionProbability: 42,
+  rateCutProbability: 58,
+  spUpProbability: 54,
+};
+
 const RISK_BASE_RETURN: Record<RiskLevel, number> = {
   conservative: 0.056,
   balanced: 0.074,
@@ -150,8 +157,12 @@ function App() {
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(DEFAULT_ONBOARDING.strategyMode);
 
   const [recessionProbability, setRecessionProbability] = useState(42);
-  const [rateCutProbability, setRateCutProbability] = useState(58);
-  const [spUpProbability, setSpUpProbability] = useState(54);
+  const [rateCutProbability, setRateCutProbability] = useState(DEFAULT_MARKET_VALUES.rateCutProbability);
+  const [spUpProbability, setSpUpProbability] = useState(DEFAULT_MARKET_VALUES.spUpProbability);
+  const [marketSources, setMarketSources] = useState<MarketFeedSource[]>([]);
+  const [marketFeedState, setMarketFeedState] = useState<'idle' | 'loading' | 'ready' | 'degraded' | 'error'>('idle');
+  const [marketFeedUpdatedAt, setMarketFeedUpdatedAt] = useState<string | null>(null);
+  const [marketRefreshNonce, setMarketRefreshNonce] = useState(0);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -283,6 +294,19 @@ function App() {
     ],
   );
 
+  const hydrateOnboardingDraft = (user: User, savedProfile?: Partial<OnboardingData> | null) => {
+    const draftDisplayName = savedProfile?.displayName || user.displayName || user.email?.split('@')[0] || '';
+
+    setProfile(null);
+    setOnboardingName(draftDisplayName);
+    setAgeRange(savedProfile?.ageRange || DEFAULT_ONBOARDING.ageRange);
+    setPrimaryGoal(savedProfile?.primaryGoal || DEFAULT_ONBOARDING.primaryGoal);
+    setMonthlyContribution(String(savedProfile?.monthlyContribution || DEFAULT_ONBOARDING.monthlyContribution));
+    setTargetHorizonYears(String(savedProfile?.targetHorizonYears || DEFAULT_ONBOARDING.targetHorizonYears));
+    setRiskLevel(savedProfile?.riskLevel || DEFAULT_ONBOARDING.riskLevel);
+    setStrategyMode(savedProfile?.strategyMode || DEFAULT_ONBOARDING.strategyMode);
+  };
+
   useEffect(() => {
     if (!appAuth || !hasValidConfig) {
       return;
@@ -316,8 +340,7 @@ function App() {
         const profileSnapshot = await getDoc(profileRef);
 
         if (!profileSnapshot.exists()) {
-          setProfile(null);
-          setOnboardingName(currentUser.displayName || currentUser.email?.split('@')[0] || '');
+          hydrateOnboardingDraft(currentUser);
           return;
         }
 
@@ -344,7 +367,8 @@ function App() {
         setStrategyMode(onboardingRecord.strategyMode);
 
       } catch {
-        setErrorMessage('Could not load onboarding profile from Firebase.');
+        hydrateOnboardingDraft(currentUser);
+        setStatusMessage('Using local onboarding defaults until Firebase profile access is available.');
       } finally {
         setIsProfileLoading(false);
       }
@@ -381,6 +405,50 @@ function App() {
 
     loadSimulations();
   }, [currentUser, profile]);
+
+  useEffect(() => {
+    if (!currentUser || view !== 'dashboard') {
+      return;
+    }
+
+    const controller = new AbortController();
+    let isCurrent = true;
+
+    const loadMarketFeed = async () => {
+      setMarketFeedState('loading');
+
+      try {
+        const feed = await fetchPolymarketMarketFeed(controller.signal);
+
+        if (!isCurrent) {
+          return;
+        }
+
+        setMarketSources(feed.sources);
+        setMarketFeedUpdatedAt(feed.generatedAt);
+
+        const sourceByKey = Object.fromEntries(feed.sources.map((source) => [source.key, source] as const));
+        setRecessionProbability(Math.round((sourceByKey.recession?.probability ?? DEFAULT_MARKET_VALUES.recessionProbability / 100) * 100));
+        setRateCutProbability(Math.round((sourceByKey.rateCuts?.probability ?? DEFAULT_MARKET_VALUES.rateCutProbability / 100) * 100));
+        setSpUpProbability(Math.round((sourceByKey.sp500?.probability ?? DEFAULT_MARKET_VALUES.spUpProbability / 100) * 100));
+
+        setMarketFeedState(feed.sources.some((source) => source.status === 'fallback') ? 'degraded' : 'ready');
+      } catch {
+        if (!isCurrent) {
+          return;
+        }
+
+        setMarketFeedState('error');
+      }
+    };
+
+    loadMarketFeed();
+
+    return () => {
+      isCurrent = false;
+      controller.abort();
+    };
+  }, [currentUser, view, marketRefreshNonce]);
 
   const resetMessages = () => {
     setStatusMessage(null);
@@ -443,6 +511,26 @@ function App() {
 
         if (name.trim()) {
           await updateProfile(userCredential.user, { displayName: name.trim() });
+        }
+
+        if (appDb) {
+          await setDoc(
+            doc(appDb, 'users', userCredential.user.uid),
+            {
+              displayName: name.trim() || userCredential.user.displayName || userCredential.user.email?.split('@')[0] || 'Wealth Horizon User',
+              email: userCredential.user.email,
+              ageRange: DEFAULT_ONBOARDING.ageRange,
+              primaryGoal: DEFAULT_ONBOARDING.primaryGoal,
+              monthlyContribution: DEFAULT_ONBOARDING.monthlyContribution,
+              targetHorizonYears: DEFAULT_ONBOARDING.targetHorizonYears,
+              riskLevel: DEFAULT_ONBOARDING.riskLevel,
+              strategyMode: DEFAULT_ONBOARDING.strategyMode,
+              onboardingComplete: false,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true },
+          );
         }
 
         setStatusMessage('Account created. Continue to onboarding to personalize your simulation engine.');
@@ -602,6 +690,11 @@ function App() {
     } finally {
       setIsSimulationSaving(false);
     }
+  };
+
+  const refreshMarketFeed = () => {
+    resetMessages();
+    setMarketRefreshNonce((currentNonce) => currentNonce + 1);
   };
 
   if (!isAuthReady) {
@@ -970,7 +1063,58 @@ function App() {
           <section className="surface-card">
             <div className="section-heading">
               <h3>Scenario controls</h3>
-              <p>These controls represent the three-level engine and can be connected to live Polymarket data later.</p>
+              <p>Live Polymarket market probabilities seed the three-level engine, and you can still fine-tune the inputs below.</p>
+            </div>
+
+            <div className="market-feed-banner">
+              <div>
+                <p className="meta-block__label">Polymarket feed</p>
+                <h4>Live market inputs</h4>
+                <p className="muted-copy">
+                  {marketFeedState === 'loading' && 'Loading the latest market data from Gamma...'}
+                  {marketFeedState === 'ready' && 'All three market feeds are live and seeded into the simulator.'}
+                  {marketFeedState === 'degraded' && 'Some feeds fell back to manual defaults, but the live markets still seeded the engine.'}
+                  {marketFeedState === 'error' && 'Unable to reach the live feed right now. Manual values remain available.'}
+                  {marketFeedState === 'idle' && 'Waiting for the live market feed to load.'}
+                </p>
+              </div>
+
+              <div className="button-row">
+                {marketFeedUpdatedAt && (
+                  <span className="status-chip status-chip--muted">
+                    Updated {new Date(marketFeedUpdatedAt).toLocaleTimeString()}
+                  </span>
+                )}
+                <button className="button button--secondary" type="button" onClick={refreshMarketFeed} disabled={marketFeedState === 'loading'}>
+                  {marketFeedState === 'loading' ? 'Refreshing...' : 'Refresh live feed'}
+                </button>
+              </div>
+            </div>
+
+            <div className="market-feed-grid">
+              {marketSources.length === 0 ? (
+                <article className="market-feed-card market-feed-card--empty">
+                  <p className="muted-copy">Live market sources will appear here once the feed loads.</p>
+                </article>
+              ) : (
+                marketSources.map((source) => (
+                  <article key={source.key} className={`market-feed-card ${source.status === 'fallback' ? 'market-feed-card--fallback' : ''}`}>
+                    <div className="market-feed-card__top">
+                      <p className="meta-block__label">{source.label}</p>
+                      <span className={`status-chip ${source.status === 'live' ? 'status-chip--live' : 'status-chip--muted'}`}>
+                        {source.status === 'live' ? 'Live' : 'Fallback'}
+                      </span>
+                    </div>
+
+                    <strong>{(source.probability * 100).toFixed(1)}%</strong>
+                    <p className="muted-copy">{source.marketTitle}</p>
+                    <p className="market-feed-card__meta">
+                      {source.slug ? `Slug: ${source.slug}` : 'Manual default source'}
+                      {source.liquidity > 0 ? ` • Liquidity ${source.liquidity.toLocaleString()}` : ''}
+                    </p>
+                  </article>
+                ))
+              )}
             </div>
 
             <div className="slider-grid">
