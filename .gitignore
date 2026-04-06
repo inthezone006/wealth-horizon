@@ -144,6 +144,16 @@ ENV/
 env.bak/
 venv.bak/
 
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Backend local environments
+backend/.venv/
+backend/venv/
+backend/env/
+
 # Spyder project settings
 .spyderproject
 .spyproject
