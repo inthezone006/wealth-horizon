@@ -10,18 +10,25 @@ import {
   type User,
 } from 'firebase/auth';
 import {
+  collection,
   doc,
   getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
   serverTimestamp,
   setDoc,
   type DocumentData,
   type Timestamp,
 } from 'firebase/firestore';
-import { appAuth, appDb, firebaseConfigStatus } from './firebase';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { appAuth, appDb, appStorage, firebaseConfigStatus } from './firebase';
 
 type AuthMode = 'signin' | 'signup';
 type RiskLevel = 'conservative' | 'balanced' | 'growth';
 type StrategyMode = 'market-probabilities' | 'historical-average' | 'compare-both';
+type OnboardingStep = 1 | 2 | 3;
 
 type OnboardingData = {
   displayName: string;
@@ -33,6 +40,37 @@ type OnboardingData = {
   strategyMode: StrategyMode;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
+};
+
+type SimulationRecord = {
+  id: string;
+  downloadUrl?: string;
+  storagePath?: string;
+  snapshot?: SimulationSnapshot;
+  createdAt?: Timestamp;
+};
+
+type SimulationSnapshot = {
+  generatedAt: string;
+  displayName: string;
+  ageRange: string;
+  primaryGoal: string;
+  monthlyContribution: number;
+  targetHorizonYears: number;
+  riskLevel: RiskLevel;
+  strategyMode: StrategyMode;
+  marketProbabilities: {
+    recessionProbability: number;
+    rateCutProbability: number;
+    spUpProbability: number;
+  };
+  outputs: {
+    level1ExpectedReturn: number;
+    level2WeightedReturn: number;
+    historicalAverageReturn: number;
+    marketProbabilityReturn: number;
+    preferredReturn: number;
+  };
 };
 
 const FIREBASE_ERROR_MESSAGES: Record<string, string> = {
@@ -52,7 +90,7 @@ const DEFAULT_ONBOARDING: Omit<OnboardingData, 'createdAt' | 'updatedAt'> = {
   monthlyContribution: 700,
   targetHorizonYears: 20,
   riskLevel: 'balanced',
-  strategyMode: 'market-probabilities',
+  strategyMode: 'compare-both',
 };
 
 const RISK_BASE_RETURN: Record<RiskLevel, number> = {
@@ -73,6 +111,21 @@ const STRATEGY_LABELS: Record<StrategyMode, string> = {
   'compare-both': 'Compare both',
 };
 
+const ONBOARDING_STEPS = [
+  {
+    title: 'Profile',
+    description: 'Tell us who you are and your primary financial goal.',
+  },
+  {
+    title: 'Plan',
+    description: 'Set your contribution level, age range, and target horizon.',
+  },
+  {
+    title: 'Strategy',
+    description: 'Choose how the simulator should interpret market information.',
+  },
+] as const;
+
 function App() {
   const [mode, setMode] = useState<AuthMode>('signin');
   const [name, setName] = useState('');
@@ -83,8 +136,11 @@ function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [profile, setProfile] = useState<OnboardingData | null>(null);
+  const [recentSimulations, setRecentSimulations] = useState<SimulationRecord[]>([]);
   const [isOnboardingSaving, setIsOnboardingSaving] = useState(false);
+  const [isSimulationSaving, setIsSimulationSaving] = useState(false);
 
+  const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>(1);
   const [onboardingName, setOnboardingName] = useState('');
   const [ageRange, setAgeRange] = useState(DEFAULT_ONBOARDING.ageRange);
   const [primaryGoal, setPrimaryGoal] = useState(DEFAULT_ONBOARDING.primaryGoal);
@@ -100,11 +156,12 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [lastSavedSnapshotUrl, setLastSavedSnapshotUrl] = useState<string | null>(null);
 
   const isSignUp = mode === 'signup';
 
   const hasValidConfig = useMemo(
-    () => firebaseConfigStatus.isValid && appAuth !== null && appDb !== null,
+    () => firebaseConfigStatus.isValid && appAuth !== null && appDb !== null && appStorage !== null,
     [],
   );
 
@@ -134,7 +191,7 @@ function App() {
   }, [profile?.riskLevel, riskLevel]);
 
   const level1ExpectedReturn = useMemo(() => {
-    const recessionDrag = recessionProbability / 100 * 0.35;
+    const recessionDrag = (recessionProbability / 100) * 0.35;
     return Math.max(baseReturn * (1 - recessionDrag), 0.01);
   }, [baseReturn, recessionProbability]);
 
@@ -183,6 +240,49 @@ function App() {
     return (level3Comparison.historical + level3Comparison.marketForward) / 2;
   }, [profile?.strategyMode, strategyMode, level3Comparison]);
 
+  const snapshotPayload = useMemo<SimulationSnapshot>(
+    () => ({
+      generatedAt: new Date().toISOString(),
+      displayName: effectiveDisplayName,
+      ageRange: profile?.ageRange || ageRange,
+      primaryGoal: profile?.primaryGoal || primaryGoal,
+      monthlyContribution: Number(profile?.monthlyContribution || monthlyContribution),
+      targetHorizonYears: Number(profile?.targetHorizonYears || targetHorizonYears),
+      riskLevel: profile?.riskLevel || riskLevel,
+      strategyMode: profile?.strategyMode || strategyMode,
+      marketProbabilities: {
+        recessionProbability,
+        rateCutProbability,
+        spUpProbability,
+      },
+      outputs: {
+        level1ExpectedReturn,
+        level2WeightedReturn,
+        historicalAverageReturn: level3Comparison.historical,
+        marketProbabilityReturn: level3Comparison.marketForward,
+        preferredReturn,
+      },
+    }),
+    [
+      ageRange,
+      effectiveDisplayName,
+      level1ExpectedReturn,
+      level2WeightedReturn,
+      level3Comparison.historical,
+      level3Comparison.marketForward,
+      monthlyContribution,
+      preferredReturn,
+      primaryGoal,
+      profile,
+      rateCutProbability,
+      recessionProbability,
+      riskLevel,
+      spUpProbability,
+      strategyMode,
+      targetHorizonYears,
+    ],
+  );
+
   useEffect(() => {
     if (!appAuth || !hasValidConfig) {
       return;
@@ -204,6 +304,7 @@ function App() {
     const loadUserProfile = async () => {
       if (!currentUser || !appDb) {
         setProfile(null);
+        setRecentSimulations([]);
         setIsProfileLoading(false);
         return;
       }
@@ -216,7 +317,7 @@ function App() {
 
         if (!profileSnapshot.exists()) {
           setProfile(null);
-          setOnboardingName(currentUser.displayName || '');
+          setOnboardingName(currentUser.displayName || currentUser.email?.split('@')[0] || '');
           return;
         }
 
@@ -234,6 +335,14 @@ function App() {
         };
 
         setProfile(onboardingRecord);
+        setOnboardingName(onboardingRecord.displayName);
+        setAgeRange(onboardingRecord.ageRange);
+        setPrimaryGoal(onboardingRecord.primaryGoal);
+        setMonthlyContribution(String(onboardingRecord.monthlyContribution));
+        setTargetHorizonYears(String(onboardingRecord.targetHorizonYears));
+        setRiskLevel(onboardingRecord.riskLevel);
+        setStrategyMode(onboardingRecord.strategyMode);
+
       } catch {
         setErrorMessage('Could not load onboarding profile from Firebase.');
       } finally {
@@ -243,6 +352,35 @@ function App() {
 
     loadUserProfile();
   }, [currentUser]);
+
+  useEffect(() => {
+    const loadSimulations = async () => {
+      if (!currentUser || !appDb) {
+        setRecentSimulations([]);
+        return;
+      }
+
+      try {
+        const simulationCollection = query(
+          collection(appDb, 'users', currentUser.uid, 'simulations'),
+          orderBy('createdAt', 'desc'),
+          limit(3),
+        );
+
+        const simulationSnapshots = await getDocs(simulationCollection);
+        setRecentSimulations(
+          simulationSnapshots.docs.map((snapshot) => ({
+            id: snapshot.id,
+            ...(snapshot.data() as Omit<SimulationRecord, 'id'>),
+          })),
+        );
+      } catch {
+        setRecentSimulations([]);
+      }
+    };
+
+    loadSimulations();
+  }, [currentUser, profile]);
 
   const resetMessages = () => {
     setStatusMessage(null);
@@ -310,7 +448,7 @@ function App() {
         setStatusMessage('Account created. Continue to onboarding to personalize your simulation engine.');
       } else {
         await signInWithEmailAndPassword(appAuth, email.trim(), password);
-          setStatusMessage('Sign in successful. Loading your online profile from Firebase.');
+        setStatusMessage('Sign in successful. Loading your online profile from Firebase.');
       }
 
       resetForm();
@@ -329,67 +467,140 @@ function App() {
     }
 
     resetMessages();
+    setProfile(null);
+    setRecentSimulations([]);
+    setOnboardingStep(1);
     await signOut(appAuth);
     setStatusMessage('Signed out successfully.');
   };
 
-  const handleOnboardingSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    resetMessages();
+  const validateOnboardingStep = () => {
+    if (onboardingStep === 1) {
+      if (onboardingName.trim().length < 2) {
+        return 'Display name must contain at least 2 characters.';
+      }
 
+      if (primaryGoal.trim().length < 3) {
+        return 'Primary goal must contain at least 3 characters.';
+      }
+    }
+
+    if (onboardingStep === 2) {
+      const monthly = Number(monthlyContribution);
+      const horizon = Number(targetHorizonYears);
+
+      if (!Number.isFinite(monthly) || monthly <= 0) {
+        return 'Monthly contribution must be greater than 0.';
+      }
+
+      if (!Number.isFinite(horizon) || horizon < 3 || horizon > 45) {
+        return 'Target horizon must be between 3 and 45 years.';
+      }
+    }
+
+    return null;
+  };
+
+  const saveOnboardingToFirebase = async () => {
     if (!currentUser || !appDb) {
-      setErrorMessage('User or database session is not ready yet.');
-      return;
+      throw new Error('Missing Firebase session.');
     }
 
     const cleanName = onboardingName.trim() || currentUser.displayName || 'Wealth Horizon User';
-    const monthly = Number(monthlyContribution);
-    const horizon = Number(targetHorizonYears);
+    const payload: Omit<OnboardingData, 'createdAt' | 'updatedAt'> = {
+      displayName: cleanName,
+      ageRange,
+      primaryGoal: primaryGoal.trim() || DEFAULT_ONBOARDING.primaryGoal,
+      monthlyContribution: Number(monthlyContribution),
+      targetHorizonYears: Number(targetHorizonYears),
+      riskLevel,
+      strategyMode,
+    };
 
-    if (!Number.isFinite(monthly) || monthly <= 0) {
-      setErrorMessage('Monthly contribution must be greater than 0.');
+    await setDoc(
+      doc(appDb, 'users', currentUser.uid),
+      {
+        ...payload,
+        email: currentUser.email,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    if (currentUser.displayName !== cleanName) {
+      await updateProfile(currentUser, { displayName: cleanName });
+    }
+
+    setProfile(payload);
+  };
+
+  const handleOnboardingNext = async () => {
+    resetMessages();
+
+    const validationError = validateOnboardingStep();
+    if (validationError) {
+      setErrorMessage(validationError);
       return;
     }
 
-    if (!Number.isFinite(horizon) || horizon < 3 || horizon > 45) {
-      setErrorMessage('Target horizon must be between 3 and 45 years.');
+    if (onboardingStep < 3) {
+      setOnboardingStep((currentStep) => (currentStep + 1) as OnboardingStep);
       return;
     }
 
     setIsOnboardingSaving(true);
-
     try {
-      const payload: Omit<OnboardingData, 'createdAt' | 'updatedAt'> = {
-        displayName: cleanName,
-        ageRange,
-        primaryGoal: primaryGoal.trim() || DEFAULT_ONBOARDING.primaryGoal,
-        monthlyContribution: monthly,
-        targetHorizonYears: horizon,
-        riskLevel,
-        strategyMode,
-      };
-
-      await setDoc(
-        doc(appDb, 'users', currentUser.uid),
-        {
-          ...payload,
-          email: currentUser.email,
-          updatedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
-
-      if (currentUser.displayName !== cleanName) {
-        await updateProfile(currentUser, { displayName: cleanName });
-      }
-
-      setProfile(payload);
+      await saveOnboardingToFirebase();
       setStatusMessage('Onboarding saved to online Firebase successfully.');
+      setOnboardingStep(1);
     } catch {
       setErrorMessage('Could not save onboarding to Firebase. Check Firestore rules and try again.');
     } finally {
       setIsOnboardingSaving(false);
+    }
+  };
+
+  const handleOnboardingBack = () => {
+    resetMessages();
+    setOnboardingStep((currentStep) => Math.max(1, currentStep - 1) as OnboardingStep);
+  };
+
+  const saveSimulationSnapshot = async () => {
+    if (!currentUser || !appDb || !appStorage) {
+      throw new Error('Firebase is not ready.');
+    }
+
+    const simulationId = `simulation-${Date.now()}`;
+    const storagePath = `users/${currentUser.uid}/simulations/${simulationId}.json`;
+    const fileRef = ref(appStorage, storagePath);
+    const blob = new Blob([JSON.stringify(snapshotPayload, null, 2)], { type: 'application/json' });
+
+    await uploadBytes(fileRef, blob, { contentType: 'application/json' });
+    const downloadUrl = await getDownloadURL(fileRef);
+
+    const simulationDoc = doc(appDb, 'users', currentUser.uid, 'simulations', simulationId);
+    await setDoc(simulationDoc, {
+      storagePath,
+      downloadUrl,
+      snapshot: snapshotPayload,
+      createdAt: serverTimestamp(),
+    });
+
+    setLastSavedSnapshotUrl(downloadUrl);
+    setStatusMessage('Simulation snapshot saved to Firebase Storage and Firestore.');
+  };
+
+  const handleSaveSimulation = async () => {
+    resetMessages();
+    setIsSimulationSaving(true);
+
+    try {
+      await saveSimulationSnapshot();
+    } catch {
+      setErrorMessage('Could not save simulation snapshot to Firebase Storage. Check bucket permissions.');
+    } finally {
+      setIsSimulationSaving(false);
     }
   };
 
@@ -530,7 +741,7 @@ function App() {
               <li>Create account with Firebase Authentication</li>
               <li>Complete onboarding right after account creation</li>
               <li>Persist onboarding profile in online Firestore</li>
-              <li>Run Level 1, Level 2, and Level 3 simulation modes</li>
+              <li>Save simulation snapshots to Firebase Storage</li>
             </ul>
 
             <div className="meta-block">
@@ -540,7 +751,7 @@ function App() {
 
             <div className="meta-block">
               <p className="meta-block__label">Level 2</p>
-              <p>Build weighted scenarios such as rate cuts or S&P trends and aggregate outcomes.</p>
+              <p>Build weighted scenarios such as rate cuts and S&P trends and aggregate outcomes.</p>
             </div>
 
             <div className="meta-block">
@@ -555,8 +766,18 @@ function App() {
         <main className="single-column">
           <section className="surface-card">
             <div className="auth-card__top">
-              <h2>Welcome onboarding</h2>
-              <span className="status-chip">Step 1 / 1</span>
+              <div>
+                <h2>Welcome onboarding</h2>
+                <p className="muted-copy">Step {onboardingStep} of 3</p>
+              </div>
+              <span className="status-chip">{ONBOARDING_STEPS[onboardingStep - 1].title}</span>
+            </div>
+
+            <div className="progress-shell" aria-label="Onboarding progress">
+              <div className="progress-track">
+                <span style={{ width: `${(onboardingStep / 3) * 100}%` }} />
+              </div>
+              <p className="muted-copy">{ONBOARDING_STEPS[onboardingStep - 1].description}</p>
             </div>
 
             {isProfileLoading && <p className="muted-copy">Loading profile...</p>}
@@ -573,85 +794,105 @@ function App() {
               </div>
             )}
 
-            <form className="onboarding-form" onSubmit={handleOnboardingSubmit}>
-              <label>
-                <span>Display name</span>
-                <input
-                  type="text"
-                  value={onboardingName}
-                  onChange={(event) => setOnboardingName(event.target.value)}
-                  placeholder="Your name"
-                />
-              </label>
+            <form className="onboarding-form" onSubmit={(event) => event.preventDefault()}>
+              {onboardingStep === 1 && (
+                <>
+                  <label>
+                    <span>Display name</span>
+                    <input
+                      type="text"
+                      value={onboardingName}
+                      onChange={(event) => setOnboardingName(event.target.value)}
+                      placeholder="Your name"
+                    />
+                  </label>
 
-              <label>
-                <span>Age range</span>
-                <select value={ageRange} onChange={(event) => setAgeRange(event.target.value)}>
-                  <option value="18-25">18-25</option>
-                  <option value="26-35">26-35</option>
-                  <option value="36-45">36-45</option>
-                  <option value="46-60">46-60</option>
-                  <option value="61+">61+</option>
-                </select>
-              </label>
+                  <label>
+                    <span>Primary goal</span>
+                    <input
+                      type="text"
+                      value={primaryGoal}
+                      onChange={(event) => setPrimaryGoal(event.target.value)}
+                      placeholder="Financial independence"
+                    />
+                  </label>
+                </>
+              )}
 
-              <label>
-                <span>Primary goal</span>
-                <input
-                  type="text"
-                  value={primaryGoal}
-                  onChange={(event) => setPrimaryGoal(event.target.value)}
-                  placeholder="Financial independence"
-                />
-              </label>
+              {onboardingStep === 2 && (
+                <>
+                  <label>
+                    <span>Age range</span>
+                    <select value={ageRange} onChange={(event) => setAgeRange(event.target.value)}>
+                      <option value="18-25">18-25</option>
+                      <option value="26-35">26-35</option>
+                      <option value="36-45">36-45</option>
+                      <option value="46-60">46-60</option>
+                      <option value="61+">61+</option>
+                    </select>
+                  </label>
 
-              <label>
-                <span>Monthly contribution (USD)</span>
-                <input
-                  type="number"
-                  min={50}
-                  step={50}
-                  value={monthlyContribution}
-                  onChange={(event) => setMonthlyContribution(event.target.value)}
-                />
-              </label>
+                  <label>
+                    <span>Monthly contribution (USD)</span>
+                    <input
+                      type="number"
+                      min={50}
+                      step={50}
+                      value={monthlyContribution}
+                      onChange={(event) => setMonthlyContribution(event.target.value)}
+                    />
+                  </label>
 
-              <label>
-                <span>Target horizon (years)</span>
-                <input
-                  type="number"
-                  min={3}
-                  max={45}
-                  value={targetHorizonYears}
-                  onChange={(event) => setTargetHorizonYears(event.target.value)}
-                />
-              </label>
+                  <label>
+                    <span>Target horizon (years)</span>
+                    <input
+                      type="number"
+                      min={3}
+                      max={45}
+                      value={targetHorizonYears}
+                      onChange={(event) => setTargetHorizonYears(event.target.value)}
+                    />
+                  </label>
+                </>
+              )}
 
-              <label>
-                <span>Risk profile</span>
-                <select value={riskLevel} onChange={(event) => setRiskLevel(event.target.value as RiskLevel)}>
-                  <option value="conservative">Conservative</option>
-                  <option value="balanced">Balanced</option>
-                  <option value="growth">Growth</option>
-                </select>
-              </label>
+              {onboardingStep === 3 && (
+                <>
+                  <label>
+                    <span>Risk profile</span>
+                    <select value={riskLevel} onChange={(event) => setRiskLevel(event.target.value as RiskLevel)}>
+                      <option value="conservative">Conservative</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="growth">Growth</option>
+                    </select>
+                  </label>
 
-              <label>
-                <span>Default strategy mode</span>
-                <select value={strategyMode} onChange={(event) => setStrategyMode(event.target.value as StrategyMode)}>
-                  <option value="market-probabilities">Market probabilities</option>
-                  <option value="historical-average">Historical average</option>
-                  <option value="compare-both">Compare both</option>
-                </select>
-              </label>
+                  <label>
+                    <span>Default strategy mode</span>
+                    <select value={strategyMode} onChange={(event) => setStrategyMode(event.target.value as StrategyMode)}>
+                      <option value="compare-both">Compare both</option>
+                      <option value="market-probabilities">Market probabilities</option>
+                      <option value="historical-average">Historical average</option>
+                    </select>
+                  </label>
+                </>
+              )}
 
-              <button className="button button--primary" type="submit" disabled={isOnboardingSaving}>
-                {isOnboardingSaving ? 'Saving...' : 'Finish onboarding'}
-              </button>
+              <div className="button-row">
+                {onboardingStep > 1 && (
+                  <button className="button button--secondary" type="button" onClick={handleOnboardingBack}>
+                    Back
+                  </button>
+                )}
 
-              <button className="button button--secondary" type="button" onClick={handleSignOut}>
-                Sign out
-              </button>
+                <button className="button button--primary" type="button" onClick={handleOnboardingNext} disabled={isOnboardingSaving}>
+                  {isOnboardingSaving ? 'Saving...' : onboardingStep === 3 ? 'Finish onboarding' : 'Continue'}
+                </button>
+
+                <button className="button button--secondary" type="button" onClick={handleSignOut}>
+                  Sign out
+                </button>
+              </div>
             </form>
           </section>
         </main>
@@ -699,8 +940,8 @@ function App() {
               <article>
                 <h4>Level 1: Probability pull</h4>
                 <p>
-                  Pull probabilities from Polymarket (for example, recession probability) and reduce expected return when
-                  recession risk rises.
+                  Pull probabilities from Polymarket and shift expected return when recession risk rises. Use all relevant markets
+                  to keep assumptions forward-looking.
                 </p>
                 <strong>{(level1ExpectedReturn * 100).toFixed(2)}% expected return</strong>
               </article>
@@ -708,7 +949,7 @@ function App() {
               <article>
                 <h4>Level 2: Scenario weighting</h4>
                 <p>
-                  Build scenario buckets such as rate cuts and S&P direction, then compute weighted portfolio outcomes.
+                  Build weighted scenarios such as rate cuts and S&P direction, then aggregate the outcomes from both scenario views.
                 </p>
                 <strong>{(level2WeightedReturn * 100).toFixed(2)}% weighted return</strong>
               </article>
@@ -716,8 +957,7 @@ function App() {
               <article>
                 <h4>Level 3: Compare paradigms</h4>
                 <p>
-                  Compare historical average models against market-implied probability models to support forward-looking
-                  decision making.
+                  Compare historical averages against market-implied probability models. The default view is compare-both.
                 </p>
                 <strong>
                   {level3Comparison.delta >= 0 ? '+' : ''}
@@ -730,7 +970,7 @@ function App() {
           <section className="surface-card">
             <div className="section-heading">
               <h3>Scenario controls</h3>
-              <p>These are UI controls for now and can later be replaced by live Polymarket API feeds.</p>
+              <p>These controls represent the three-level engine and can be connected to live Polymarket data later.</p>
             </div>
 
             <div className="slider-grid">
@@ -781,6 +1021,47 @@ function App() {
                 <p>Current strategy mode</p>
                 <strong>{STRATEGY_LABELS[profile.strategyMode]}</strong>
               </article>
+            </div>
+          </section>
+
+          <section className="surface-card">
+            <div className="section-heading">
+              <h3>Saved simulations</h3>
+              <p>Snapshots are stored in Firebase Storage and indexed in Firestore.</p>
+            </div>
+
+            <div className="button-row">
+              <button className="button button--primary" type="button" onClick={handleSaveSimulation} disabled={isSimulationSaving}>
+                {isSimulationSaving ? 'Saving...' : 'Save current simulation'}
+              </button>
+              {lastSavedSnapshotUrl && (
+                <a className="button button--secondary" href={lastSavedSnapshotUrl} target="_blank" rel="noreferrer">
+                  Open latest snapshot
+                </a>
+              )}
+            </div>
+
+            <div className="recent-list">
+              {recentSimulations.length === 0 ? (
+                <p className="muted-copy">No saved simulations yet.</p>
+              ) : (
+                recentSimulations.map((simulation) => (
+                  <article key={simulation.id} className="recent-list__item">
+                    <div>
+                      <strong>{simulation.snapshot?.displayName || 'Simulation run'}</strong>
+                      <p className="muted-copy">
+                        {simulation.snapshot?.marketProbabilities.recessionProbability ?? 0}% recession |{' '}
+                        {simulation.snapshot?.outputs.preferredReturn ? (simulation.snapshot.outputs.preferredReturn * 100).toFixed(2) : '0.00'}% return
+                      </p>
+                    </div>
+                    {simulation.downloadUrl && (
+                      <a href={simulation.downloadUrl} target="_blank" rel="noreferrer">
+                        View JSON
+                      </a>
+                    )}
+                  </article>
+                ))
+              )}
             </div>
           </section>
         </main>

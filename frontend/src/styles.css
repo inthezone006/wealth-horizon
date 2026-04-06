@@ -34,7 +34,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -97,6 +98,183 @@ input {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(290px, 0.9fr);
   gap: 18px;
+}
+
+.single-column,
+.dashboard-stack {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 18px;
+}
+
+.surface-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+  padding: 24px;
+}
+
+.surface-card h1,
+.surface-card h2,
+.surface-card h3,
+.surface-card h4 {
+  margin: 0;
+  font-family: 'Sora', sans-serif;
+  letter-spacing: -0.02em;
+}
+
+.surface-card--hero {
+  background:
+    linear-gradient(145deg, rgba(10, 108, 214, 0.08), transparent 55%),
+    linear-gradient(180deg, #ffffff 0%, #f5faff 100%);
+}
+
+.dashboard-top {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.dashboard-top h2 {
+  margin-bottom: 8px;
+}
+
+.muted-copy {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.metric-grid,
+.level-grid,
+.compare-grid,
+.onboarding-form,
+.slider-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.progress-shell {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.progress-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8eef7;
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--primary), #58a5f0);
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.metric-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metric-grid article,
+.level-grid article,
+.compare-grid article {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 14px;
+}
+
+.metric-grid p,
+.level-grid p,
+.compare-grid p,
+.section-heading p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.metric-grid strong,
+.level-grid strong,
+.compare-grid strong {
+  display: block;
+  margin-top: 8px;
+  font-family: 'Sora', sans-serif;
+  font-size: 1.1rem;
+}
+
+.section-heading {
+  margin-bottom: 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.section-heading h3 {
+  font-size: 1.3rem;
+}
+
+.level-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.level-grid h4 {
+  margin-bottom: 8px;
+}
+
+.compare-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.slider-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.slider-grid label span {
+  font-size: 0.86rem;
+}
+
+.slider-grid input[type='range'] {
+  min-height: auto;
+  padding: 0;
+  accent-color: var(--primary);
+}
+
+.onboarding-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.onboarding-form .button {
+  margin-top: 6px;
+}
+
+select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-soft);
+  color: var(--text);
+  min-height: 46px;
+  padding: 0 14px;
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+select:focus {
+  border-color: #6ea9ea;
+  box-shadow: 0 0 0 3px rgba(10, 108, 214, 0.12);
 }
 
 .auth-card,
@@ -319,9 +497,51 @@ input:focus {
   line-height: 1.55;
 }
 
+.recent-list {
+  display: grid;
+  gap: 10px;
+}
+
+.recent-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #f8fbff;
+}
+
+.recent-list__item strong {
+  display: block;
+  margin-bottom: 6px;
+  font-family: 'Sora', sans-serif;
+}
+
+.recent-list__item a {
+  color: var(--primary);
+  font-weight: 700;
+  text-decoration: none;
+}
+
 @media (max-width: 930px) {
   .layout-grid {
     grid-template-columns: 1fr;
+  }
+
+  .metric-grid,
+  .level-grid,
+  .compare-grid,
+  .slider-grid,
+  .onboarding-form {
+    grid-template-columns: 1fr;
+  }
+
+  .button-row,
+  .recent-list__item {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 
@@ -331,11 +551,17 @@ input:focus {
   }
 
   .auth-card,
-  .insight-card {
+  .insight-card,
+  .surface-card {
     padding: 18px;
   }
 
   .account-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-top {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

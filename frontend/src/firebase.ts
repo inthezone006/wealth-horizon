@@ -1,5 +1,6 @@
 import { initializeApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
+import { getStorage, type FirebaseStorage } from 'firebase/storage';
 import { getFirestore, type Firestore } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -27,14 +28,16 @@ const missing = requiredEnv.filter((key) => {
 let firebaseApp: FirebaseApp | null = null;
 let appAuth: Auth | null = null;
 let appDb: Firestore | null = null;
+let appStorage: FirebaseStorage | null = null;
 
 if (missing.length === 0) {
   firebaseApp = initializeApp(firebaseConfig);
   appAuth = getAuth(firebaseApp);
   appDb = getFirestore(firebaseApp);
+  appStorage = getStorage(firebaseApp);
 }
 
-export { appAuth, appDb, firebaseApp };
+export { appAuth, appDb, appStorage, firebaseApp };
 
 export const firebaseConfigStatus = {
   isValid: missing.length === 0,
