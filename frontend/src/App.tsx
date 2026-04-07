@@ -22,8 +22,7 @@ import {
   type DocumentData,
   type Timestamp,
 } from 'firebase/firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { appAuth, appDb, appStorage, firebaseConfigStatus } from './firebase';
+import { appAuth, appDb, firebaseConfigStatus } from './firebase';
 import { fetchPolymarketMarketFeed, type MarketFeedSource } from './polymarket';
 import { fetchSimulation, type SimulationProfile, type SimulationProjectionPoint, type SimulationRequest, type SimulationResponse } from './simulationApi';
 
@@ -47,8 +46,6 @@ type OnboardingData = {
 
 type SimulationRecord = {
   id: string;
-  downloadUrl?: string;
-  storagePath?: string;
   snapshot?: SimulationSnapshot;
   createdAt?: Timestamp;
 };
@@ -119,6 +116,9 @@ const RISK_BASE_RETURN: Record<RiskLevel, number> = {
   growth: 0.094,
 };
 
+const EXPECTED_RETURN_TREND_PROBS = [0.40, 0.35, 0.25] as const;
+const EXPECTED_RETURN_TREND_VALUES = [0.12, 0.07, -0.15] as const;
+
 const RISK_LABELS: Record<RiskLevel, string> = {
   conservative: 'Conservative',
   balanced: 'Balanced',
@@ -151,9 +151,10 @@ const THEME_STORAGE_KEY = 'wealth-horizon-theme';
 function getFirebaseErrorMessage(error: unknown, fallback: string) {
   const firebaseError = error as FirebaseClientError;
   const errorCode = (firebaseError?.code || '').toLowerCase();
+  const configuredProjectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || 'unknown-project';
 
   if (errorCode.endsWith('permission-denied')) {
-    return 'Firestore permission denied. Update Firestore rules for users/{uid} and users/{uid}/simulations/{docId}.';
+    return `Firestore permission denied in project ${configuredProjectId}. Publish rules that allow authenticated users to read/write users/{uid} and users/{uid}/simulations/{docId}, and confirm you are signed in to the same Firebase project.`;
   }
 
   if (errorCode.endsWith('unavailable')) {
@@ -283,12 +284,11 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [lastSavedSnapshotUrl, setLastSavedSnapshotUrl] = useState<string | null>(null);
 
   const isSignUp = mode === 'signup';
 
   const hasValidConfig = useMemo(
-    () => firebaseConfigStatus.isValid && appAuth !== null && appDb !== null && appStorage !== null,
+    () => firebaseConfigStatus.isValid && appAuth !== null && appDb !== null,
     [],
   );
 
@@ -331,20 +331,33 @@ function App() {
     const rateCuts = rateCutProbability / 100;
     const spUp = spUpProbability / 100;
 
+    const total = recession + rateCuts + spUp;
+    const normalizedProbs =
+      total > 0
+        ? {
+            riskOn: spUp / total,
+            disinflation: rateCuts / total,
+            recession: recession / total,
+          }
+        : {
+            riskOn: EXPECTED_RETURN_TREND_PROBS[0],
+            disinflation: EXPECTED_RETURN_TREND_PROBS[1],
+            recession: EXPECTED_RETURN_TREND_PROBS[2],
+          };
+
     const regimeReturns = {
-      recession: baseReturn - 0.045,
-      disinflation: baseReturn + 0.012,
-      riskOn: baseReturn + 0.025,
+      riskOn: EXPECTED_RETURN_TREND_VALUES[0],
+      disinflation: EXPECTED_RETURN_TREND_VALUES[1],
+      recession: EXPECTED_RETURN_TREND_VALUES[2],
     };
 
     const weighted =
-      recession * regimeReturns.recession +
-      rateCuts * (1 - recession) * regimeReturns.disinflation +
-      spUp * regimeReturns.riskOn +
-      (1 - spUp) * (baseReturn - 0.012);
+      normalizedProbs.riskOn * regimeReturns.riskOn +
+      normalizedProbs.disinflation * regimeReturns.disinflation +
+      normalizedProbs.recession * regimeReturns.recession;
 
     return Math.max(weighted, 0.01);
-  }, [baseReturn, recessionProbability, rateCutProbability, spUpProbability]);
+  }, [recessionProbability, rateCutProbability, spUpProbability]);
 
   const level3Comparison = useMemo(() => {
     const historical = baseReturn;
@@ -946,23 +959,15 @@ function App() {
   };
 
   const saveSimulationSnapshot = async () => {
-    if (!currentUser || !appDb || !appStorage) {
+    if (!currentUser || !appDb) {
       throw new Error('Firebase is not ready.');
     }
 
     const simulationSnapshot = activeSimulation;
     const simulationId = `simulation-${Date.now()}`;
-    const storagePath = `users/${currentUser.uid}/simulations/${simulationId}.json`;
-    const fileRef = ref(appStorage, storagePath);
-    const blob = new Blob([JSON.stringify(simulationSnapshot, null, 2)], { type: 'application/json' });
-
-    await uploadBytes(fileRef, blob, { contentType: 'application/json' });
-    const downloadUrl = await getDownloadURL(fileRef);
 
     const simulationDoc = doc(appDb, 'users', currentUser.uid, 'simulations', simulationId);
     await setDoc(simulationDoc, {
-      storagePath,
-      downloadUrl,
       shareUrl,
       shareToken,
       snapshot: simulationSnapshot,
@@ -970,8 +975,7 @@ function App() {
       createdAt: serverTimestamp(),
     });
 
-    setLastSavedSnapshotUrl(downloadUrl);
-    setStatusMessage('Simulation snapshot saved to Firebase Storage and Firestore.');
+    setStatusMessage('Simulation snapshot saved to Firestore.');
   };
 
   const handleSaveSimulation = async () => {
@@ -981,7 +985,7 @@ function App() {
     try {
       await saveSimulationSnapshot();
     } catch (error) {
-      setErrorMessage(getFirebaseErrorMessage(error, 'Could not save simulation snapshot to Firebase Storage. Check bucket permissions.'));
+      setErrorMessage(getFirebaseErrorMessage(error, 'Could not save simulation snapshot to Firestore. Check Firestore rules and try again.'));
     } finally {
       setIsSimulationSaving(false);
     }
@@ -1181,7 +1185,7 @@ function App() {
               <li>Create account with Firebase Authentication</li>
               <li>Complete onboarding right after account creation</li>
               <li>Persist onboarding profile in online Firestore</li>
-              <li>Save simulation snapshots to Firebase Storage</li>
+              <li>Save simulation snapshots directly in Firestore</li>
             </ul>
 
             <div className="meta-block">
@@ -1576,18 +1580,13 @@ function App() {
           <section className="surface-card">
             <div className="section-heading">
               <h3>Saved simulations</h3>
-              <p>Snapshots are stored in Firebase Storage and indexed in Firestore.</p>
+              <p>Snapshots are stored directly in Firestore under users/{'{uid}'}/simulations.</p>
             </div>
 
             <div className="button-row">
               <button className="button button--primary" type="button" onClick={handleSaveSimulation} disabled={isSimulationSaving}>
                 {isSimulationSaving ? 'Saving...' : 'Save current simulation'}
               </button>
-              {lastSavedSnapshotUrl && (
-                <a className="button button--secondary" href={lastSavedSnapshotUrl} target="_blank" rel="noreferrer">
-                  Open latest snapshot
-                </a>
-              )}
             </div>
 
             <div className="recent-list">
@@ -1605,11 +1604,6 @@ function App() {
                       </p>
                     </div>
                     <div className="recent-list__actions">
-                      {simulation.downloadUrl && (
-                        <a href={simulation.downloadUrl} target="_blank" rel="noreferrer">
-                          View JSON
-                        </a>
-                      )}
                       {simulation.snapshot?.shareToken && (
                         <button
                           type="button"

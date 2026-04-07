@@ -35,6 +35,9 @@ DEFAULT_MARKET_PROBABILITIES = {
     "spUpProbability": 54.0,
 }
 
+EXPECTED_RETURN_TREND_PROBS = [0.40, 0.35, 0.25]
+EXPECTED_RETURN_TREND_VALUES = [0.12, 0.07, -0.15]
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -152,19 +155,32 @@ def _calculate_simulation(profile: dict[str, Any], market_probabilities: dict[st
     rate_cut_probability = market_probabilities["rateCutProbability"] / 100
     sp_up_probability = market_probabilities["spUpProbability"] / 100
 
+    probability_total = recession_probability + rate_cut_probability + sp_up_probability
+    if probability_total > 0:
+        normalized_probabilities = {
+            "recession": recession_probability / probability_total,
+            "disinflation": rate_cut_probability / probability_total,
+            "riskOn": sp_up_probability / probability_total,
+        }
+    else:
+        normalized_probabilities = {
+            "riskOn": EXPECTED_RETURN_TREND_PROBS[0],
+            "disinflation": EXPECTED_RETURN_TREND_PROBS[1],
+            "recession": EXPECTED_RETURN_TREND_PROBS[2],
+        }
+
     level1_expected_return = max(base_return * (1 - recession_probability * 0.35), 0.01)
 
     regime_returns = {
-        "recession": base_return - 0.045,
-        "disinflation": base_return + 0.012,
-        "riskOn": base_return + 0.025,
+        "riskOn": EXPECTED_RETURN_TREND_VALUES[0],
+        "disinflation": EXPECTED_RETURN_TREND_VALUES[1],
+        "recession": EXPECTED_RETURN_TREND_VALUES[2],
     }
 
     level2_weighted_return = max(
-        recession_probability * regime_returns["recession"]
-        + rate_cut_probability * (1 - recession_probability) * regime_returns["disinflation"]
-        + sp_up_probability * regime_returns["riskOn"]
-        + (1 - sp_up_probability) * (base_return - 0.012),
+        normalized_probabilities["riskOn"] * regime_returns["riskOn"]
+        + normalized_probabilities["disinflation"] * regime_returns["disinflation"]
+        + normalized_probabilities["recession"] * regime_returns["recession"],
         0.01,
     )
 
