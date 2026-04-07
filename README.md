@@ -66,6 +66,10 @@ service cloud.firestore {
 		match /users/{userId} {
 			allow read, write: if request.auth != null && request.auth.uid == userId;
 		}
+
+		match /users/{userId}/simulations/{simulationId} {
+			allow read, write: if request.auth != null && request.auth.uid == userId;
+		}
 	}
 }
 ```
@@ -85,7 +89,7 @@ service firebase.storage {
 
 ## Backend
 
-The backend is a minimal Flask app with placeholder API routes for later integration.
+The backend is a Flask simulation API that validates portfolio inputs and returns deterministic projection data.
 
 ```bash
 cd backend
@@ -95,8 +99,35 @@ pip install -r requirements.txt
 python app.py
 ```
 
+Available endpoints:
+
+- `GET /api/health` returns service status and version.
+- `GET /api/meta` returns the backend description and route map.
+- `POST /api/simulate` validates a profile payload and returns a projection with annual balance breakdowns.
+
+Example request body:
+
+```json
+{
+	"profile": {
+		"displayName": "Ava Carter",
+		"ageRange": "26-35",
+		"primaryGoal": "Financial independence",
+		"monthlyContribution": 700,
+		"targetHorizonYears": 20,
+		"riskLevel": "balanced",
+		"strategyMode": "compare-both"
+	},
+	"marketProbabilities": {
+		"recessionProbability": 42,
+		"rateCutProbability": 58,
+		"spUpProbability": 54
+	}
+}
+```
+
 ## Next Steps
 
 1. Connect the frontend form to the backend API.
-2. Add validation and simulation calculation endpoints.
-3. Wire charts and results to real scenario data.
+2. Wire charts and results to real scenario data.
+3. Add persistence if you want server-side simulation history.
