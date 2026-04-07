@@ -15,6 +15,35 @@
   --radius-lg: 22px;
   --radius-md: 14px;
   --shadow-soft: 0 26px 55px rgba(20, 34, 53, 0.08);
+  --bg-radial-a: rgba(10, 108, 214, 0.14);
+  --bg-radial-b: rgba(53, 166, 110, 0.12);
+  --bg-linear-start: #f8fbff;
+  --bg-linear-end: #eff4fa;
+  --grain-dot: rgba(20, 34, 53, 0.045);
+  --chip-muted-bg: #edf2f8;
+  --chip-muted-text: #4a5d75;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0d1420;
+  --panel: #111b2a;
+  --panel-soft: #172335;
+  --text: #e8f0fd;
+  --muted: #9fb2cb;
+  --border: #2a3a50;
+  --primary: #7dc0ff;
+  --primary-strong: #9ad0ff;
+  --success: #38c08a;
+  --danger: #ff7b7b;
+  --shadow-soft: 0 26px 55px rgba(0, 0, 0, 0.34);
+  --bg-radial-a: rgba(125, 192, 255, 0.2);
+  --bg-radial-b: rgba(56, 192, 138, 0.16);
+  --bg-linear-start: #0a1320;
+  --bg-linear-end: #101b2c;
+  --grain-dot: rgba(235, 245, 255, 0.07);
+  --chip-muted-bg: #1f2f44;
+  --chip-muted-text: #bdd3ed;
 }
 
 * {
@@ -28,9 +57,9 @@ body {
   font-family: 'IBM Plex Sans', sans-serif;
   color: var(--text);
   background:
-    radial-gradient(circle at 0% 0%, rgba(10, 108, 214, 0.14), transparent 38%),
-    radial-gradient(circle at 100% 100%, rgba(53, 166, 110, 0.12), transparent 38%),
-    linear-gradient(180deg, #f8fbff 0%, #eff4fa 100%);
+    radial-gradient(circle at 0% 0%, var(--bg-radial-a), transparent 38%),
+    radial-gradient(circle at 100% 100%, var(--bg-radial-b), transparent 38%),
+    linear-gradient(180deg, var(--bg-linear-start) 0%, var(--bg-linear-end) 100%);
 }
 
 button,
@@ -50,7 +79,7 @@ select {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background-image: radial-gradient(rgba(20, 34, 53, 0.045) 1px, transparent 0);
+  background-image: radial-gradient(var(--grain-dot) 1px, transparent 0);
   background-size: 9px 9px;
   opacity: 0.36;
 }
@@ -59,6 +88,25 @@ select {
   position: relative;
   z-index: 1;
   margin-bottom: 24px;
+}
+
+.app-header__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.theme-toggle {
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  color: var(--text);
+  border-radius: 999px;
+  min-height: 38px;
+  padding: 0 14px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .eyebrow {
@@ -378,8 +426,8 @@ select:focus {
 }
 
 .status-chip--muted {
-  background: #edf2f8;
-  color: #4a5d75;
+  background: var(--chip-muted-bg);
+  color: var(--chip-muted-text);
 }
 
 .status-chip--live {
@@ -492,7 +540,7 @@ input:focus {
 
 .button--secondary {
   border: 1px solid var(--border);
-  background: #ffffff;
+  background: var(--panel);
   color: var(--text);
 }
 
@@ -533,7 +581,7 @@ input:focus {
 }
 
 .insight-card {
-  background: linear-gradient(180deg, #ffffff 0%, #f3f9ff 100%);
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-soft) 100%);
 }
 
 .insight-card h2 {
@@ -551,7 +599,7 @@ input:focus {
 .meta-block {
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: #ffffff;
+  background: var(--panel);
   padding: 12px;
 }
 
@@ -590,7 +638,7 @@ input:focus {
 .recent-list__actions button {
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: #ffffff;
+  background: var(--panel);
   color: var(--text);
   padding: 8px 12px;
   text-decoration: none;
@@ -723,6 +771,11 @@ input:focus {
   .dashboard-top {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .app-header__top {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .market-feed-banner {

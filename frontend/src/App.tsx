@@ -31,6 +31,7 @@ type AuthMode = 'signin' | 'signup';
 type RiskLevel = 'conservative' | 'balanced' | 'growth';
 type StrategyMode = 'market-probabilities' | 'historical-average' | 'compare-both';
 type OnboardingStep = 1 | 2 | 3;
+type ThemeMode = 'light' | 'dark';
 
 type OnboardingData = {
   displayName: string;
@@ -145,6 +146,8 @@ const ONBOARDING_STEPS = [
   },
 ] as const;
 
+const THEME_STORAGE_KEY = 'wealth-horizon-theme';
+
 function getFirebaseErrorMessage(error: unknown, fallback: string) {
   const firebaseError = error as FirebaseClientError;
   const errorCode = (firebaseError?.code || '').toLowerCase();
@@ -233,6 +236,16 @@ function toSnapshotFromSimulation(response: SimulationResponse): SimulationSnaps
 }
 
 function App() {
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+
+    if (storedTheme === 'light' || storedTheme === 'dark') {
+      return storedTheme;
+    }
+
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+
   const [mode, setMode] = useState<AuthMode>('signin');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -518,6 +531,11 @@ function App() {
     setRiskLevel(savedProfile?.riskLevel || DEFAULT_ONBOARDING.riskLevel);
     setStrategyMode(savedProfile?.strategyMode || DEFAULT_ONBOARDING.strategyMode);
   };
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', themeMode);
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     if (!appAuth || !hasValidConfig) {
@@ -1017,6 +1035,10 @@ function App() {
     setMarketRefreshNonce((currentNonce) => currentNonce + 1);
   };
 
+  const handleThemeToggle = () => {
+    setThemeMode((currentTheme) => (currentTheme === 'dark' ? 'light' : 'dark'));
+  };
+
   if (!isAuthReady) {
     return (
       <div className="app-shell">
@@ -1035,7 +1057,12 @@ function App() {
       <div className="grain-overlay" aria-hidden="true" />
 
       <header className="app-header">
-        <p className="eyebrow">Wealth Horizon</p>
+        <div className="app-header__top">
+          <p className="eyebrow">Wealth Horizon</p>
+          <button className="theme-toggle" type="button" onClick={handleThemeToggle}>
+            {themeMode === 'dark' ? 'Switch to Light' : 'Switch to Dark'}
+          </button>
+        </div>
         <h1>{view === 'auth' ? 'Secure access for your financial workspace' : 'Forward-looking wealth simulator'}</h1>
         <p>
           {view === 'auth'
